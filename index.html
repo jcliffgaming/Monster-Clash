@@ -1,7 +1,8 @@
-<!DOCTYPE html>
+d<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Monster Clash</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <style>
 :root{color-scheme:dark;--bg:#120e26;--panel:#241c47;--ink:#f5efff;--gold:#ffc83d;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif}
@@ -550,12 +551,32 @@ setArena();
 let UID=0,RM=null;const PV={};
 const NIDX=Object.fromEntries(NAMES.map((n,i)=>[n,i])),EM=['😀','😢','😡','👏','🔥'];
 try{window.claude&&claude.use('room').then(r=>{RM=r;if(inMenu&&tab==='pvp')showMenu('pvp')}).catch(()=>{})}catch(e){}
+/* peer-to-peer transport for the website version (PeerJS, WebRTC) */
+const P2P={join(name){return new Promise((resolve,reject)=>{
+const H={};let peer,conn=null,done=false,closed=false,myId=name;const host=PV.role==='host';
+const fail=(code,message)=>{if(done)return;done=true;try{peer&&peer.destroy()}catch(e){}reject({code,message})};
+const deliver=(topic,data,from,me)=>{(H[topic]||[]).slice().forEach(fn=>{try{fn({topic,data,peer:from,isMe:me,sameTab:me})}catch(e){console.error(e)}})};
+const wire=c=>{conn=c;c.on('data',m=>{if(m&&typeof m.t==='string')deliver(m.t,m.d,c.peer,false)});
+c.on('close',()=>{conn=null;if(!closed)deliver('ev',{k:'q'},c.peer,false)});c.on('error',()=>{})};
+const room={name,
+emit(topic,data){return new Promise(r=>{const d=JSON.parse(JSON.stringify(data===undefined?null:data));setTimeout(()=>deliver(topic,d,myId,true),0);if(conn&&conn.open)conn.send({t:topic,d});r()})},
+on(topic,fn){(H[topic]=H[topic]||[]).push(fn);return()=>{H[topic]=(H[topic]||[]).filter(f=>f!==fn)}},
+leave(){closed=true;try{conn&&conn.close()}catch(e){}try{peer&&peer.destroy()}catch(e){}return Promise.resolve()}};
+peer=host?new Peer(name):new Peer();
+peer.on('error',e=>{const t=e&&e.type;fail(t==='peer-unavailable'?'not_found':t==='unavailable-id'?'taken':'upstream_error',String(e&&e.message||t))});
+peer.on('open',id=>{if(host){done=true;resolve(room);return}myId=id;
+const c=peer.connect(name,{serialization:'json',reliable:true});
+c.on('open',()=>{if(!done){done=true;wire(c);resolve(room)}});c.on('error',()=>fail('upstream_error','connection'))});
+peer.on('connection',c=>{if(!host)return;if(conn&&conn.open){c.close();return}c.on('open',()=>wire(c))});
+setTimeout(()=>fail('upstream_error','timeout'),12000)})}};
+if(!RM&&window.Peer)RM=P2P;
+
 (function(){const eb=document.getElementById('emo');EM.forEach((e,i)=>{const b=el('button');b.textContent=e;b.onclick=()=>{if(!S.pvp||!PV.room||S.over||PV.cd>Date.now())return;PV.cd=Date.now()+1200;showEmo(i,1);PV.room.emit('ev',{k:'em',e:i})};eb.appendChild(b)})})();
 function showEmo(i,mine){S.emo={e:EM[i]||'😀',t:2.2,mine}}
 const genCode=()=>{const a='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let c='';for(let i=0;i<5;i++)c+=a[Math.random()*a.length|0];return c};
 function pvpLeave(){const R=PV.room;if(R){const f=()=>{try{R.leave()}catch(e){}};if(S&&S.pvp&&!S.over)R.emit('ev',{k:'q'}).then(f,f);else f()}for(const k in PV)delete PV[k];document.getElementById('emo').style.display='none'}
 async function pvpEnter(code){
-try{PV.room=await RM.join('mcpvp-'+code.toLowerCase())}catch(e){PV.status='Could not open the room ('+(e&&e.code||'error')+').';PV.code=null;showMenu('pvp');return false}
+try{PV.room=await RM.join('mcpvp-'+code.toLowerCase())}catch(e){PV.status=e&&e.code==='not_found'?'No match found with that code. Check it and try again.':'Could not connect ('+(e&&e.code||'error')+'). Try again.';PV.code=null;showMenu('pvp');return false}
 const R=PV.room;
 R.on('hello',m=>{if(m.sameTab){PV.me=m.peer;return}if(PV.role!=='host'||PV.opp||m.isMe)return;PV.opp=m.peer;PV.glv=(m.data&&m.data.lv)||{};PV.gkl=Math.max(1,+(m.data&&m.data.kl)||1);pvpStartHost()});
 R.on('start',m=>{if(PV.role!=='guest'||PV.started||m.isMe||!m.data||m.data.to!==PV.me||!Array.isArray(m.data.mx))return;PV.opp=m.peer;pvpStartGuest(m.data.mx)});
@@ -601,7 +622,7 @@ function guestTick(dt){if(S.over||inMenu)return;S.T+=dt;S.el[0]=Math.min(10,S.el
 for(const u of S.units){const dx=u.tx-u.x,dy=u.ty-u.y,k=Math.min(1,dt*12);u.x+=dx*k;u.y+=dy*k;if(Math.abs(dx)+Math.abs(dy)>1)u.walk+=dt;u.fl-=dt}
 for(const w of S.towers)w.fl-=dt;for(const f of S.fx)f.t-=dt;S.fx=S.fx.filter(f=>f.t>0)}
 function pvp(b){
-const d=el('div','msg');d.textContent=RM?'Battle a friend live. One of you creates a match and shares the code; the other joins with it. Both of you need this page open.':'Friend battles only work on the Claude share link. This downloaded copy plays solo modes only.';b.appendChild(d);
+const d=el('div','msg');d.textContent=RM?'Battle a friend live. One of you creates a match and shares the code; the other joins with it. Both of you need this page open.':'Friend battles could not load (they need an internet connection). Reload the page and try again.';b.appendChild(d);
 if(!RM)return;
 if(PV.code){const c=el('div','code');c.textContent=PV.code;b.appendChild(c);const st=el('div','msg');st.textContent=PV.status||'';b.appendChild(st);
 const x=el('button','free off');x.textContent='Cancel';x.onclick=()=>{pvpLeave();showMenu('pvp')};b.appendChild(x);return}
